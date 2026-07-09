@@ -54,3 +54,9 @@ npm run build
 - No se almacenan datos sensibles
 - Los datos recibidos se sanitizan antes de guardarse
 - React renderiza el contenido de forma segura, evitando inyección de HTML en la interfaz
+
+## Manejo de errores y validaciones
+
+- Se capturan errores de red, respuestas inválidas y estructuras inesperadas antes de renderizar.
+- La app cuenta con fallback visual para evitar pantallas en blanco.
+- Sugerencia de IA aplicada: se consideró usar una estrategia de recuperación por fallback y mensajes de estado claros. Se aceptó la propuesta porque mejora la experiencia y evita que la interfaz quede rota si la API falla.

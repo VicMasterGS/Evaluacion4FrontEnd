@@ -239,6 +239,7 @@ function App() {
   const [recipes, setRecipes] = useState<Recipe[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [requestStatus, setRequestStatus] = useState<'idle' | 'ok' | 'fallback' | 'error'>('idle')
   const [tags, setTags] = useState<string[]>([])
   const [favorites, setFavorites] = useState<number[]>(() => loadPersistedState().favorites)
   const [weeklyMenu, setWeeklyMenu] = useState<Record<string, number | null>>(() => loadPersistedState().weeklyMenu)
@@ -298,28 +299,33 @@ function App() {
 
         const response = await fetch(url, { signal: controller.signal })
         if (!response.ok) {
-          throw new Error('No se pudieron cargar las recetas')
+          throw new Error(`Respuesta inválida de la API: ${response.status}`)
         }
 
         const payload = (await response.json()) as RecipesApiResponse
-        const nextRecipes = Array.isArray(payload.recipes)
-          ? payload.recipes.map(sanitizeRecipe).filter((recipe): recipe is Recipe => Boolean(recipe))
-          : []
+        if (!payload || typeof payload !== 'object' || !Array.isArray(payload.recipes)) {
+          throw new Error('La estructura de la respuesta no es válida')
+        }
+
+        const nextRecipes = payload.recipes.map(sanitizeRecipe).filter((recipe): recipe is Recipe => Boolean(recipe))
 
         if (nextRecipes.length > 0) {
           setRecipes(nextRecipes)
           setTotalRecipes(typeof payload.total === 'number' ? payload.total : nextRecipes.length)
           setError('')
+          setRequestStatus('ok')
         } else {
           setRecipes(getFallbackRecipes())
           setTotalRecipes(getFallbackRecipes().length)
           setError('La API no devolvió resultados; mostramos recetas de respaldo.')
+          setRequestStatus('fallback')
         }
       } catch (fetchError) {
         if ((fetchError as Error).name !== 'AbortError') {
           setRecipes(getFallbackRecipes())
           setTotalRecipes(getFallbackRecipes().length)
           setError('No fue posible contactar a la API; se muestran recetas de respaldo.')
+          setRequestStatus('error')
         }
       } finally {
         if (!controller.signal.aborted) {
@@ -552,6 +558,11 @@ function App() {
         </div>
 
         {storageNotice ? <p className="status-message">{storageNotice}</p> : null}
+        {requestStatus !== 'idle' ? (
+          <p className={`status-message ${requestStatus === 'error' ? 'error' : ''}`}>
+            {requestStatus === 'ok' ? 'Catálogo cargado correctamente desde la API.' : requestStatus === 'fallback' ? 'La API devolvió una respuesta incompleta; se está mostrando contenido de respaldo.' : 'Se activó el modo de respaldo por un problema de conexión o respuesta.'}
+          </p>
+        ) : null}
 
         <RecipeCatalog
           recipes={recipes}

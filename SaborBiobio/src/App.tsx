@@ -21,6 +21,86 @@ const STORAGE_KEY = 'saborbiobio-state-v1'
 const PAGE_SIZE = 8
 const WEEK_DAYS = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'] as const
 const VALID_MEAL_TYPES = ['Breakfast', 'Lunch', 'Dinner', 'Snack', 'Dessert'] as const
+const MEAL_TYPE_LABELS: Record<(typeof VALID_MEAL_TYPES)[number], string> = {
+  Breakfast: 'Desayuno',
+  Lunch: 'Almuerzo',
+  Dinner: 'Cena',
+  Snack: 'Snack',
+  Dessert: 'Postre',
+}
+
+const FALLBACK_RECIPES: Recipe[] = [
+  {
+    id: 1001,
+    name: 'Ensalada de quinoa biobío',
+    description: 'Una opción fresca con verduras locales y proteína vegetal.',
+    image: 'https://images.unsplash.com/photo-1512621776951-a57141f2eefd?auto=format&fit=crop&w=900&q=80',
+    cuisine: 'Biobío',
+    mealType: 'Lunch',
+    tags: ['Vegetarian', 'Healthy', 'Summer'],
+    ingredients: [
+      { name: 'Quinoa', amount: 200, unit: 'g' },
+      { name: 'Tomate', amount: 2, unit: 'unidades' },
+      { name: 'Pepino', amount: 1, unit: 'unidad' },
+    ],
+    instructions: ['Cocina la quinoa.', 'Mezcla con verduras y aliña.'],
+    prepTimeMinutes: 15,
+    cookTimeMinutes: 15,
+    servings: 2,
+    difficulty: 'Easy',
+    rating: 4.7,
+    reviewCount: 18,
+    caloriesPerServing: 340,
+  },
+  {
+    id: 1002,
+    name: 'Tortilla de verduras regional',
+    description: 'Ideal para el almuerzo con ingredientes simples y muy sabrosos.',
+    image: 'https://images.unsplash.com/photo-1506084868230-bb9d95c24759?auto=format&fit=crop&w=900&q=80',
+    cuisine: 'Biobío',
+    mealType: 'Dinner',
+    tags: ['Vegetarian', 'Comfort', 'Dinner'],
+    ingredients: [
+      { name: 'Huevos', amount: 4, unit: 'unidades' },
+      { name: 'Zanahoria', amount: 1, unit: 'unidad' },
+      { name: 'Cebolla', amount: 1, unit: 'unidad' },
+    ],
+    instructions: ['Saltea las verduras.', 'Agrega los huevos y cocina a fuego bajo.'],
+    prepTimeMinutes: 10,
+    cookTimeMinutes: 20,
+    servings: 3,
+    difficulty: 'Easy',
+    rating: 4.6,
+    reviewCount: 12,
+    caloriesPerServing: 290,
+  },
+  {
+    id: 1003,
+    name: 'Pancakes de avena',
+    description: 'Desayuno energético con fruta fresca y un toque natural de canela.',
+    image: 'https://images.unsplash.com/photo-1526318896980-cf78c088247c?auto=format&fit=crop&w=900&q=80',
+    cuisine: 'Biobío',
+    mealType: 'Breakfast',
+    tags: ['Breakfast', 'Healthy', 'Sweet'],
+    ingredients: [
+      { name: 'Avena', amount: 150, unit: 'g' },
+      { name: 'Plátano', amount: 1, unit: 'unidad' },
+      { name: 'Leche', amount: 250, unit: 'ml' },
+    ],
+    instructions: ['Mezcla los ingredientes.', 'Cocina por ambos lados.'],
+    prepTimeMinutes: 10,
+    cookTimeMinutes: 15,
+    servings: 2,
+    difficulty: 'Easy',
+    rating: 4.8,
+    reviewCount: 21,
+    caloriesPerServing: 260,
+  },
+]
+
+function getFallbackRecipes(): Recipe[] {
+  return FALLBACK_RECIPES.map((recipe) => ({ ...recipe }))
+}
 
 function sanitizeString(value: unknown, fallback = ''): string {
   return typeof value === 'string' ? value.trim() : fallback
@@ -226,13 +306,20 @@ function App() {
           ? payload.recipes.map(sanitizeRecipe).filter((recipe): recipe is Recipe => Boolean(recipe))
           : []
 
-        setRecipes(nextRecipes)
-        setTotalRecipes(typeof payload.total === 'number' ? payload.total : nextRecipes.length)
+        if (nextRecipes.length > 0) {
+          setRecipes(nextRecipes)
+          setTotalRecipes(typeof payload.total === 'number' ? payload.total : nextRecipes.length)
+          setError('')
+        } else {
+          setRecipes(getFallbackRecipes())
+          setTotalRecipes(getFallbackRecipes().length)
+          setError('La API no devolvió resultados; mostramos recetas de respaldo.')
+        }
       } catch (fetchError) {
         if ((fetchError as Error).name !== 'AbortError') {
-          setError('No fue posible cargar el catálogo en este momento.')
-          setRecipes([])
-          setTotalRecipes(0)
+          setRecipes(getFallbackRecipes())
+          setTotalRecipes(getFallbackRecipes().length)
+          setError('No fue posible contactar a la API; se muestran recetas de respaldo.')
         }
       } finally {
         if (!controller.signal.aborted) {
@@ -319,6 +406,22 @@ function App() {
       nextMenu[day] = recipeId
       return nextMenu
     })
+  }
+
+  function removeRecipeFromDay(day: string) {
+    if (!WEEK_DAYS.includes(day as (typeof WEEK_DAYS)[number])) {
+      return
+    }
+
+    setWeeklyMenu((current) => {
+      const nextMenu = { ...current }
+      delete nextMenu[day]
+      return nextMenu
+    })
+  }
+
+  function clearWeeklyMenu() {
+    setWeeklyMenu({})
   }
 
   const favoriteRecipes = useMemo(
@@ -438,7 +541,7 @@ function App() {
             <option value="">Todos los tipos</option>
             {VALID_MEAL_TYPES.map((mealType) => (
               <option key={mealType} value={mealType}>
-                {mealType}
+                {MEAL_TYPE_LABELS[mealType]}
               </option>
             ))}
           </select>
@@ -468,7 +571,13 @@ function App() {
       </section>
 
       <section id="planificacion" className="planner-section">
-        <WeeklyMenu weekDays={WEEK_DAYS} weeklyMenu={weeklyMenu} recipes={recipes} />
+        <WeeklyMenu
+          weekDays={WEEK_DAYS}
+          weeklyMenu={weeklyMenu}
+          recipes={recipes}
+          onRemoveRecipeFromDay={removeRecipeFromDay}
+          onClearMenu={clearWeeklyMenu}
+        />
 
         <aside>
           <ShoppingList shoppingList={shoppingList} />

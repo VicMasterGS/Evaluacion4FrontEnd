@@ -1,32 +1,56 @@
-# React + TypeScript + Vite
+# SaborBiobío
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+SaborBiobío es una SPA en React para planificar menús semanales y generar listas de compras a partir de recetas obtenidas desde la API pública de DummyJSON.
 
-Currently, two official plugins are available:
+## Características principales
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- Catálogo de recetas consumido desde la API real de DummyJSON
+- Búsqueda por nombre, filtros por etiqueta y por tipo de comida
+- Tarjetas reutilizables para mostrar información de cada receta
+- Favoritos y menú semanal gestionados en el navegador
+- Lista de compras generada automáticamente desde el menú semanal
+- Persistencia local mediante Local Storage con validación de datos
+- Manejo robusto de errores para que la app nunca quede en blanco
 
-## React Compiler
+## Tecnologías utilizadas
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+- React
+- TypeScript
+- Vite
+- Fetch API
+- Local Storage
 
-## Expanding the Oxlint configuration
+## Requisitos
 
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
+- Node.js 18 o superior
+- npm o pnpm
 
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+## Instalación
+
+```bash
+npm install
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+## Ejecución en desarrollo
+
+```bash
+npm run dev
+```
+
+## Build de producción
+
+```bash
+npm run build
+```
+
+## Estructura del proyecto
+
+- src/components: componentes reutilizables como catálogo, tarjeta, menú semanal y lista de compras
+- src/App.tsx: lógica principal de la aplicación
+- src/types.ts: modelos de datos
+
+## Seguridad y calidad
+
+- No se almacenan datos sensibles
+- Los datos recibidos se sanitizan antes de guardarse
+- React renderiza el contenido de forma segura, evitando inyección de HTML en la interfaz

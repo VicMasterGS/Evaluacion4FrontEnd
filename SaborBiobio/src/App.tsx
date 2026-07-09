@@ -1,0 +1,536 @@
+import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { RecipeCatalog } from './components/RecipeCatalog'
+import { ShoppingList } from './components/ShoppingList'
+import { WeeklyMenu } from './components/WeeklyMenu'
+import type { Ingredient, Recipe } from './types'
+import './App.css'
+
+type RecipesApiResponse = {
+  recipes?: unknown[]
+  total?: number
+  skip?: number
+  limit?: number
+}
+
+type PersistedState = {
+  favorites: number[]
+  weeklyMenu: Record<string, number | null>
+}
+
+const STORAGE_KEY = 'saborbiobio-state-v1'
+const PAGE_SIZE = 8
+const WEEK_DAYS = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'] as const
+const VALID_MEAL_TYPES = ['Breakfast', 'Lunch', 'Dinner', 'Snack', 'Dessert'] as const
+
+function sanitizeString(value: unknown, fallback = ''): string {
+  return typeof value === 'string' ? value.trim() : fallback
+}
+
+function sanitizePositiveInteger(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isInteger(value) && value > 0) {
+    return value
+  }
+  if (typeof value === 'string' && /^\d+$/.test(value)) {
+    const parsed = Number.parseInt(value, 10)
+    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null
+  }
+  return null
+}
+
+function sanitizeIngredient(value: unknown): Ingredient | null {
+  if (!value || typeof value !== 'object') {
+    return null
+  }
+
+  const candidate = value as Record<string, unknown>
+  const amount = typeof candidate.amount === 'number' ? candidate.amount : Number(candidate.amount)
+  const unit = sanitizeString(candidate.unit, 'unidad')
+  const name = sanitizeString(candidate.name, 'Ingrediente')
+
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return null
+  }
+
+  return {
+    name,
+    amount,
+    unit,
+  }
+}
+
+function sanitizeRecipe(value: unknown): Recipe | null {
+  if (!value || typeof value !== 'object') {
+    return null
+  }
+
+  const candidate = value as Record<string, unknown>
+  const id = sanitizePositiveInteger(candidate.id)
+  if (id === null) {
+    return null
+  }
+
+  const ingredients = Array.isArray(candidate.ingredients)
+    ? candidate.ingredients.map(sanitizeIngredient).filter((ingredient): ingredient is Ingredient => Boolean(ingredient))
+    : []
+
+  const instructions = Array.isArray(candidate.instructions)
+    ? candidate.instructions.map((instruction) => sanitizeString(instruction)).filter(Boolean)
+    : []
+
+  const tags = Array.isArray(candidate.tags)
+    ? candidate.tags.map((tag) => sanitizeString(tag)).filter(Boolean).slice(0, 8)
+    : []
+
+  return {
+    id,
+    name: sanitizeString(candidate.name, `Receta ${id}`),
+    description: sanitizeString(candidate.description, 'Descripción disponible próximamente.'),
+    image: sanitizeString(candidate.image, 'https://images.unsplash.com/photo-1547592180-85f173990554?auto=format&fit=crop&w=900&q=80'),
+    cuisine: sanitizeString(candidate.cuisine, 'Biobío'),
+    mealType: sanitizeString(candidate.mealType, 'Dinner'),
+    tags,
+    ingredients,
+    instructions,
+    prepTimeMinutes: typeof candidate.prepTimeMinutes === 'number' ? candidate.prepTimeMinutes : 20,
+    cookTimeMinutes: typeof candidate.cookTimeMinutes === 'number' ? candidate.cookTimeMinutes : 20,
+    servings: typeof candidate.servings === 'number' ? candidate.servings : 2,
+    difficulty: sanitizeString(candidate.difficulty, 'Easy'),
+    rating: typeof candidate.rating === 'number' ? Math.max(0, Math.min(5, candidate.rating)) : 4.5,
+    reviewCount: typeof candidate.reviewCount === 'number' ? candidate.reviewCount : 0,
+    caloriesPerServing: typeof candidate.caloriesPerServing === 'number' ? candidate.caloriesPerServing : 320,
+  }
+}
+
+function sanitizePersistedState(value: unknown): PersistedState {
+  if (!value || typeof value !== 'object') {
+    return { favorites: [], weeklyMenu: {} }
+  }
+
+  const candidate = value as Record<string, unknown>
+  const favorites = Array.isArray(candidate.favorites)
+    ? candidate.favorites.map((entry) => sanitizePositiveInteger(entry)).filter((entry): entry is number => entry !== null)
+    : []
+
+  const weeklyMenu = candidate.weeklyMenu && typeof candidate.weeklyMenu === 'object'
+    ? Object.entries(candidate.weeklyMenu as Record<string, unknown>).reduce<Record<string, number | null>>((accumulator, [day, recipeId]) => {
+        if (WEEK_DAYS.includes(day as (typeof WEEK_DAYS)[number]) && sanitizePositiveInteger(recipeId) !== null) {
+          accumulator[day] = sanitizePositiveInteger(recipeId)
+        }
+        return accumulator
+      }, {})
+    : {}
+
+  return {
+    favorites: Array.from(new Set(favorites)).slice(0, 24),
+    weeklyMenu,
+  }
+}
+
+function loadPersistedState(): PersistedState {
+  if (typeof window === 'undefined') {
+    return { favorites: [], weeklyMenu: {} }
+  }
+
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY)
+    if (!raw) {
+      return { favorites: [], weeklyMenu: {} }
+    }
+
+    return sanitizePersistedState(JSON.parse(raw))
+  } catch {
+    return { favorites: [], weeklyMenu: {} }
+  }
+}
+
+function savePersistedState(state: PersistedState): void {
+  if (typeof window === 'undefined') {
+    return
+  }
+
+  try {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
+  } catch {
+    // Se ignora para no romper la experiencia si el navegador rechaza el almacenamiento.
+  }
+}
+
+function App() {
+  const [recipes, setRecipes] = useState<Recipe[]>([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [tags, setTags] = useState<string[]>([])
+  const [favorites, setFavorites] = useState<number[]>(() => loadPersistedState().favorites)
+  const [weeklyMenu, setWeeklyMenu] = useState<Record<string, number | null>>(() => loadPersistedState().weeklyMenu)
+  const [selectedRecipe, setSelectedRecipe] = useState<Recipe | null>(null)
+  const [detailLoading, setDetailLoading] = useState(false)
+  const [query, setQuery] = useState('')
+  const [page, setPage] = useState(0)
+  const [totalRecipes, setTotalRecipes] = useState(0)
+  const [activeFilter, setActiveFilter] = useState<'default' | 'search' | 'tag' | 'meal'>('default')
+  const [activeTag, setActiveTag] = useState('')
+  const [activeMealType, setActiveMealType] = useState('')
+  const [daySelection, setDaySelection] = useState<Record<number, string>>({})
+  const [storageNotice, setStorageNotice] = useState('')
+
+  useEffect(() => {
+    savePersistedState({ favorites, weeklyMenu })
+    setStorageNotice('')
+  }, [favorites, weeklyMenu])
+
+  useEffect(() => {
+    const controller = new AbortController()
+
+    async function loadTags() {
+      try {
+        const response = await fetch('https://dummyjson.com/recipes/tags', { signal: controller.signal })
+        if (!response.ok) {
+          throw new Error('No se pudieron cargar las etiquetas')
+        }
+        const payload = (await response.json()) as string[]
+        setTags(Array.isArray(payload) ? payload.filter((tag): tag is string => typeof tag === 'string') : [])
+      } catch {
+        setTags([])
+      }
+    }
+
+    void loadTags()
+    return () => controller.abort()
+  }, [])
+
+  useEffect(() => {
+    const controller = new AbortController()
+
+    async function loadRecipes() {
+      setLoading(true)
+      setError('')
+
+      try {
+        let url = `https://dummyjson.com/recipes?limit=${PAGE_SIZE}&skip=${page * PAGE_SIZE}`
+
+        if (activeFilter === 'search' && query.trim()) {
+          url = `https://dummyjson.com/recipes/search?q=${encodeURIComponent(query.trim())}`
+        } else if (activeFilter === 'tag' && activeTag) {
+          url = `https://dummyjson.com/recipes/tag/${encodeURIComponent(activeTag)}`
+        } else if (activeFilter === 'meal' && activeMealType) {
+          url = `https://dummyjson.com/recipes/meal-type/${encodeURIComponent(activeMealType)}`
+        }
+
+        const response = await fetch(url, { signal: controller.signal })
+        if (!response.ok) {
+          throw new Error('No se pudieron cargar las recetas')
+        }
+
+        const payload = (await response.json()) as RecipesApiResponse
+        const nextRecipes = Array.isArray(payload.recipes)
+          ? payload.recipes.map(sanitizeRecipe).filter((recipe): recipe is Recipe => Boolean(recipe))
+          : []
+
+        setRecipes(nextRecipes)
+        setTotalRecipes(typeof payload.total === 'number' ? payload.total : nextRecipes.length)
+      } catch (fetchError) {
+        if ((fetchError as Error).name !== 'AbortError') {
+          setError('No fue posible cargar el catálogo en este momento.')
+          setRecipes([])
+          setTotalRecipes(0)
+        }
+      } finally {
+        if (!controller.signal.aborted) {
+          setLoading(false)
+        }
+      }
+    }
+
+    void loadRecipes()
+    return () => controller.abort()
+  }, [activeFilter, activeMealType, activeTag, page, query])
+
+  useEffect(() => {
+    const selectedRecipeId = selectedRecipe?.id
+    if (!selectedRecipeId) {
+      return
+    }
+
+    const controller = new AbortController()
+
+    async function loadDetail() {
+      setDetailLoading(true)
+      try {
+        const response = await fetch(`https://dummyjson.com/recipes/${selectedRecipeId}`, { signal: controller.signal })
+        if (!response.ok) {
+          throw new Error('No se pudo cargar el detalle')
+        }
+
+        const payload = sanitizeRecipe(await response.json())
+        if (payload) {
+          setSelectedRecipe(payload)
+        }
+      } catch {
+        setSelectedRecipe((current) => current ?? null)
+      } finally {
+        if (!controller.signal.aborted) {
+          setDetailLoading(false)
+        }
+      }
+    }
+
+    void loadDetail()
+    return () => controller.abort()
+  }, [selectedRecipe?.id])
+
+  function handleSearch(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const trimmedQuery = query.trim()
+    setActiveFilter(trimmedQuery ? 'search' : 'default')
+    setActiveTag('')
+    setActiveMealType('')
+    setPage(0)
+  }
+
+  function handleResetFilters() {
+    setQuery('')
+    setActiveFilter('default')
+    setActiveTag('')
+    setActiveMealType('')
+    setPage(0)
+  }
+
+  function toggleFavorite(recipeId: number) {
+    setFavorites((current) => {
+      if (current.includes(recipeId)) {
+        return current.filter((id) => id !== recipeId)
+      }
+      return [...current, recipeId]
+    })
+  }
+
+  function assignRecipeToDay(recipeId: number, day: string) {
+    if (!WEEK_DAYS.includes(day as (typeof WEEK_DAYS)[number])) {
+      return
+    }
+
+    setWeeklyMenu((current) => {
+      const nextMenu = { ...current }
+      for (const [existingDay, existingRecipeId] of Object.entries(nextMenu)) {
+        if (existingRecipeId === recipeId) {
+          delete nextMenu[existingDay]
+        }
+      }
+      nextMenu[day] = recipeId
+      return nextMenu
+    })
+  }
+
+  const favoriteRecipes = useMemo(
+    () => recipes.filter((recipe) => favorites.includes(recipe.id)),
+    [favorites, recipes],
+  )
+
+  const menuRecipes = useMemo(() => {
+    const ids = Object.values(weeklyMenu).filter((id): id is number => typeof id === 'number' && Number.isInteger(id) && id > 0)
+    const uniqueIds = Array.from(new Set(ids))
+    return uniqueIds.map((recipeId) => recipes.find((recipe) => recipe.id === recipeId)).filter((recipe): recipe is Recipe => Boolean(recipe))
+  }, [recipes, weeklyMenu])
+
+  const shoppingList = useMemo(() => {
+    const list = new Map<string, Ingredient>()
+    menuRecipes.forEach((recipe) => {
+      recipe.ingredients.forEach((ingredient) => {
+        const key = `${ingredient.name.toLowerCase()}::${ingredient.unit.toLowerCase()}`
+        const current = list.get(key)
+        if (current) {
+          current.amount += ingredient.amount
+        } else {
+          list.set(key, { ...ingredient })
+        }
+      })
+    })
+    return Array.from(list.values()).sort((first, second) => first.name.localeCompare(second.name))
+  }, [menuRecipes])
+
+  return (
+    <div className="app-shell">
+      <header className="hero-card">
+        <div>
+          <p className="eyebrow">Sabor Biobío</p>
+          <h1>Planifica tus menús y compra con inteligencia</h1>
+          <p className="hero-copy">
+            Descubre recetas inspiradas en la cocina regional, arma tu menú semanal y genera una lista de compras a partir de los ingredientes que ya elegiste.
+          </p>
+          <div className="hero-actions">
+            <a href="#catalogo" className="primary-btn">Ver recetas</a>
+            <a href="#planificacion" className="secondary-btn">Ir al plan semanal</a>
+          </div>
+        </div>
+        <div className="hero-stats">
+          <div>
+            <strong>{recipes.length}</strong>
+            <span>recetas del día</span>
+          </div>
+          <div>
+            <strong>{favorites.length}</strong>
+            <span>favoritas</span>
+          </div>
+          <div>
+            <strong>{menuRecipes.length}</strong>
+            <span>en tu menú</span>
+          </div>
+        </div>
+      </header>
+
+      <section className="info-grid">
+        <article className="info-card">
+          <h2>Qué ofrece SaborBiobío</h2>
+          <p>Un servicio de cajas de ingredientes y planificación de menús semanales que nace para facilitar cocinar mejor en la región del Biobío.</p>
+        </article>
+        <article className="info-card">
+          <h2>Tu experiencia queda solo en este navegador</h2>
+          <p>Los favoritos, el menú semanal y la lista de compras se guardan con Local Storage y se validan para evitar datos manipulados.</p>
+        </article>
+      </section>
+
+      <section className="catalog-section">
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">Catálogo</p>
+            <h2>Explora recetas desde la API</h2>
+          </div>
+          <form className="search-bar" onSubmit={handleSearch}>
+            <input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Buscar por nombre"
+              aria-label="Buscar recetas"
+            />
+            <button type="submit">Buscar</button>
+          </form>
+        </div>
+
+        <div className="filters">
+          <select
+            value={activeTag}
+            onChange={(event) => {
+              const nextTag = event.target.value
+              setActiveTag(nextTag)
+              setActiveMealType('')
+              setActiveFilter(nextTag ? 'tag' : 'default')
+              setPage(0)
+            }}
+          >
+            <option value="">Todas las etiquetas</option>
+            {tags.map((tag) => (
+              <option key={tag} value={tag}>
+                {tag}
+              </option>
+            ))}
+          </select>
+
+          <select
+            value={activeMealType}
+            onChange={(event) => {
+              const nextMealType = event.target.value
+              setActiveMealType(nextMealType)
+              setActiveTag('')
+              setActiveFilter(nextMealType ? 'meal' : 'default')
+              setPage(0)
+            }}
+          >
+            <option value="">Todos los tipos</option>
+            {VALID_MEAL_TYPES.map((mealType) => (
+              <option key={mealType} value={mealType}>
+                {mealType}
+              </option>
+            ))}
+          </select>
+
+          <button type="button" className="secondary-btn small" onClick={handleResetFilters}>
+            Limpiar filtros
+          </button>
+        </div>
+
+        {storageNotice ? <p className="status-message">{storageNotice}</p> : null}
+
+        <RecipeCatalog
+          recipes={recipes}
+          loading={loading}
+          error={error}
+          page={page}
+          totalRecipes={totalRecipes}
+          favorites={favorites}
+          daySelection={daySelection}
+          weekDays={WEEK_DAYS}
+          onToggleFavorite={toggleFavorite}
+          onSelectRecipe={setSelectedRecipe}
+          onDayChange={(recipeId, day) => setDaySelection((current) => ({ ...current, [recipeId]: day }))}
+          onAddToMenu={(recipeId, day) => assignRecipeToDay(recipeId, day)}
+          onPageChange={(nextPage) => setPage(nextPage)}
+        />
+      </section>
+
+      <section id="planificacion" className="planner-section">
+        <WeeklyMenu weekDays={WEEK_DAYS} weeklyMenu={weeklyMenu} recipes={recipes} />
+
+        <aside>
+          <ShoppingList shoppingList={shoppingList} />
+
+          <div className="sidebar-panel favorites-panel">
+            <div className="section-heading">
+              <div>
+                <p className="eyebrow">Favoritas</p>
+                <h2>Recetas que vuelven</h2>
+              </div>
+            </div>
+            {favoriteRecipes.length === 0 ? (
+              <p className="empty-state">Marca recetas como favoritas para encontrarlas rápido.</p>
+            ) : (
+              <ul className="favorites-list">
+                {favoriteRecipes.map((recipe) => (
+                  <li key={recipe.id}>{recipe.name}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </aside>
+      </section>
+
+      <section className="detail-panel">
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">Detalle</p>
+            <h2>{selectedRecipe ? selectedRecipe.name : 'Selecciona una receta'}</h2>
+          </div>
+        </div>
+
+        {detailLoading ? <p className="status-message">Cargando detalle…</p> : null}
+        {!selectedRecipe ? (
+          <p className="empty-state">Haz clic en “Ver detalles” para ver información completa y pasos de preparación.</p>
+        ) : (
+          <div className="detail-card">
+            <img src={selectedRecipe.image} alt={selectedRecipe.name} />
+            <div>
+              <p className="recipe-meta">{selectedRecipe.cuisine} · {selectedRecipe.mealType}</p>
+              <p>{selectedRecipe.description}</p>
+              <p className="detail-meta">Prep: {selectedRecipe.prepTimeMinutes} min · Cocción: {selectedRecipe.cookTimeMinutes} min · Porciones: {selectedRecipe.servings}</p>
+              <h3>Ingredientes</h3>
+              <ul>
+                {selectedRecipe.ingredients.map((ingredient) => (
+                  <li key={`${selectedRecipe.id}-${ingredient.name}`}>
+                    {ingredient.amount} {ingredient.unit} · {ingredient.name}
+                  </li>
+                ))}
+              </ul>
+              <h3>Pasos</h3>
+              <ol>
+                {selectedRecipe.instructions.map((instruction, index) => (
+                  <li key={`${selectedRecipe.id}-${index}`}>{instruction}</li>
+                ))}
+              </ol>
+            </div>
+          </div>
+        )}
+      </section>
+    </div>
+  )
+}
+
+export default App

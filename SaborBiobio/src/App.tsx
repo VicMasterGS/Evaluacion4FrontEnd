@@ -256,7 +256,7 @@ function App() {
 
   useEffect(() => {
     savePersistedState({ favorites, weeklyMenu })
-    setStorageNotice('')
+    setStorageNotice('Menú semanal y favoritos guardados en Local Storage.')
   }, [favorites, weeklyMenu])
 
   useEffect(() => {

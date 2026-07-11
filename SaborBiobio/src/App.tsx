@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { RecipeCatalog } from './components/RecipeCatalog'
 import { ShoppingList } from './components/ShoppingList'
 import { WeeklyMenu } from './components/WeeklyMenu'
-import type { Ingredient, Recipe } from './types'
+import type { Ingredient, Recipe, ShoppingListItem } from './types'
 import './App.css'
 
 type RecipesApiResponse = {
@@ -15,6 +15,7 @@ type RecipesApiResponse = {
 type PersistedState = {
   favorites: number[]
   weeklyMenu: Record<string, number | null>
+  shoppingList: ShoppingListItem[]
 }
 
 const STORAGE_KEY = 'saborbiobio-state-v1'
@@ -118,6 +119,19 @@ function sanitizePositiveInteger(value: unknown): number | null {
 }
 
 function sanitizeIngredient(value: unknown): Ingredient | null {
+  if (typeof value === 'string') {
+    const name = sanitizeString(value)
+    if (!name) {
+      return null
+    }
+
+    return {
+      name,
+      amount: 1,
+      unit: 'unidad',
+    }
+  }
+
   if (!value || typeof value !== 'object') {
     return null
   }
@@ -135,6 +149,29 @@ function sanitizeIngredient(value: unknown): Ingredient | null {
     name,
     amount,
     unit,
+  }
+}
+
+function sanitizeShoppingListItem(value: unknown): ShoppingListItem | null {
+  if (!value || typeof value !== 'object') {
+    return null
+  }
+
+  const candidate = value as Record<string, unknown>
+  const amount = typeof candidate.amount === 'number' ? candidate.amount : Number(candidate.amount)
+  const unit = sanitizeString(candidate.unit, 'unidad')
+  const name = sanitizeString(candidate.name, 'Ingrediente')
+  const purchased = typeof candidate.purchased === 'boolean' ? candidate.purchased : false
+
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return null
+  }
+
+  return {
+    name,
+    amount,
+    unit,
+    purchased,
   }
 }
 
@@ -183,7 +220,7 @@ function sanitizeRecipe(value: unknown): Recipe | null {
 
 function sanitizePersistedState(value: unknown): PersistedState {
   if (!value || typeof value !== 'object') {
-    return { favorites: [], weeklyMenu: {} }
+    return { favorites: [], weeklyMenu: {}, shoppingList: [] }
   }
 
   const candidate = value as Record<string, unknown>
@@ -200,26 +237,31 @@ function sanitizePersistedState(value: unknown): PersistedState {
       }, {})
     : {}
 
+  const shoppingList = Array.isArray(candidate.shoppingList)
+    ? candidate.shoppingList.map(sanitizeShoppingListItem).filter((item): item is ShoppingListItem => Boolean(item))
+    : []
+
   return {
     favorites: Array.from(new Set(favorites)).slice(0, 24),
     weeklyMenu,
+    shoppingList,
   }
 }
 
 function loadPersistedState(): PersistedState {
   if (typeof window === 'undefined') {
-    return { favorites: [], weeklyMenu: {} }
+    return { favorites: [], weeklyMenu: {}, shoppingList: [] }
   }
 
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY)
     if (!raw) {
-      return { favorites: [], weeklyMenu: {} }
+      return { favorites: [], weeklyMenu: {}, shoppingList: [] }
     }
 
     return sanitizePersistedState(JSON.parse(raw))
   } catch {
-    return { favorites: [], weeklyMenu: {} }
+    return { favorites: [], weeklyMenu: {}, shoppingList: [] }
   }
 }
 
@@ -235,14 +277,46 @@ function savePersistedState(state: PersistedState): void {
   }
 }
 
+function buildShoppingListFromMenu(recipes: Recipe[], previousList: ShoppingListItem[] = []): ShoppingListItem[] {
+  const itemsByKey = new Map<string, ShoppingListItem>()
+  const previousItems = new Map(previousList.map((item) => [`${item.name.toLowerCase()}::${item.unit.toLowerCase()}`, item]))
+
+  recipes.forEach((recipe) => {
+    recipe.ingredients.forEach((ingredient) => {
+      const key = `${ingredient.name.toLowerCase()}::${ingredient.unit.toLowerCase()}`
+      const previousItem = previousItems.get(key)
+      const existingItem = itemsByKey.get(key)
+
+      if (existingItem) {
+        existingItem.amount += ingredient.amount
+      } else {
+        itemsByKey.set(key, {
+          name: ingredient.name,
+          amount: ingredient.amount,
+          unit: ingredient.unit,
+          purchased: previousItem?.purchased ?? false,
+        })
+      }
+    })
+  })
+
+  return Array.from(itemsByKey.values()).sort((first, second) => first.name.localeCompare(second.name))
+}
+
 function App() {
-  const [recipes, setRecipes] = useState<Recipe[]>([])
+  const fallbackRecipes = useMemo(() => getFallbackRecipes(), [])
+  const [recipes, setRecipes] = useState<Recipe[]>(fallbackRecipes)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [requestStatus, setRequestStatus] = useState<'idle' | 'ok' | 'fallback' | 'error'>('idle')
   const [tags, setTags] = useState<string[]>([])
   const [favorites, setFavorites] = useState<number[]>(() => loadPersistedState().favorites)
   const [weeklyMenu, setWeeklyMenu] = useState<Record<string, number | null>>(() => loadPersistedState().weeklyMenu)
+  const [shoppingList, setShoppingList] = useState<ShoppingListItem[]>(() => loadPersistedState().shoppingList)
+  const [recipeLibrary, setRecipeLibrary] = useState<Record<number, Recipe>>(() => {
+    const entries = fallbackRecipes.map((recipe) => [recipe.id, recipe] as const)
+    return Object.fromEntries(entries)
+  })
   const [selectedRecipe, setSelectedRecipe] = useState<Recipe | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [query, setQuery] = useState('')
@@ -255,9 +329,9 @@ function App() {
   const [storageNotice, setStorageNotice] = useState('')
 
   useEffect(() => {
-    savePersistedState({ favorites, weeklyMenu })
-    setStorageNotice('Menú semanal y favoritos guardados en Local Storage.')
-  }, [favorites, weeklyMenu])
+    savePersistedState({ favorites, weeklyMenu, shoppingList })
+    setStorageNotice('Menú semanal, favoritos y lista de compras guardados en Local Storage.')
+  }, [favorites, weeklyMenu, shoppingList])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -311,19 +385,42 @@ function App() {
 
         if (nextRecipes.length > 0) {
           setRecipes(nextRecipes)
+          setRecipeLibrary((current) => {
+            const next = { ...current }
+            nextRecipes.forEach((recipe) => {
+              next[recipe.id] = recipe
+            })
+            return next
+          })
           setTotalRecipes(typeof payload.total === 'number' ? payload.total : nextRecipes.length)
           setError('')
           setRequestStatus('ok')
         } else {
-          setRecipes(getFallbackRecipes())
-          setTotalRecipes(getFallbackRecipes().length)
+          const fallbackRecipes = getFallbackRecipes()
+          setRecipes(fallbackRecipes)
+          setRecipeLibrary((current) => {
+            const next = { ...current }
+            fallbackRecipes.forEach((recipe) => {
+              next[recipe.id] = recipe
+            })
+            return next
+          })
+          setTotalRecipes(fallbackRecipes.length)
           setError('La API no devolvió resultados; mostramos recetas de respaldo.')
           setRequestStatus('fallback')
         }
       } catch (fetchError) {
         if ((fetchError as Error).name !== 'AbortError') {
-          setRecipes(getFallbackRecipes())
-          setTotalRecipes(getFallbackRecipes().length)
+          const fallbackRecipes = getFallbackRecipes()
+          setRecipes(fallbackRecipes)
+          setRecipeLibrary((current) => {
+            const next = { ...current }
+            fallbackRecipes.forEach((recipe) => {
+              next[recipe.id] = recipe
+            })
+            return next
+          })
+          setTotalRecipes(fallbackRecipes.length)
           setError('No fue posible contactar a la API; se muestran recetas de respaldo.')
           setRequestStatus('error')
         }
@@ -357,6 +454,7 @@ function App() {
         const payload = sanitizeRecipe(await response.json())
         if (payload) {
           setSelectedRecipe(payload)
+          setRecipeLibrary((current) => ({ ...current, [payload.id]: payload }))
         }
       } catch {
         setSelectedRecipe((current) => current ?? null)
@@ -430,6 +528,22 @@ function App() {
     setWeeklyMenu({})
   }
 
+  function toggleShoppingItemPurchased(name: string, unit: string) {
+    setShoppingList((current) =>
+      current.map((item) =>
+        item.name === name && item.unit === unit ? { ...item, purchased: !item.purchased } : item,
+      ),
+    )
+  }
+
+  function removeShoppingItem(name: string, unit: string) {
+    setShoppingList((current) => current.filter((item) => !(item.name === name && item.unit === unit)))
+  }
+
+  function clearShoppingList() {
+    setShoppingList([])
+  }
+
   const favoriteRecipes = useMemo(
     () => recipes.filter((recipe) => favorites.includes(recipe.id)),
     [favorites, recipes],
@@ -438,24 +552,23 @@ function App() {
   const menuRecipes = useMemo(() => {
     const ids = Object.values(weeklyMenu).filter((id): id is number => typeof id === 'number' && Number.isInteger(id) && id > 0)
     const uniqueIds = Array.from(new Set(ids))
-    return uniqueIds.map((recipeId) => recipes.find((recipe) => recipe.id === recipeId)).filter((recipe): recipe is Recipe => Boolean(recipe))
-  }, [recipes, weeklyMenu])
+    return uniqueIds
+      .map((recipeId) => recipeLibrary[recipeId] ?? recipes.find((recipe) => recipe.id === recipeId))
+      .filter((recipe): recipe is Recipe => Boolean(recipe))
+  }, [recipeLibrary, recipes, weeklyMenu])
 
-  const shoppingList = useMemo(() => {
-    const list = new Map<string, Ingredient>()
-    menuRecipes.forEach((recipe) => {
-      recipe.ingredients.forEach((ingredient) => {
-        const key = `${ingredient.name.toLowerCase()}::${ingredient.unit.toLowerCase()}`
-        const current = list.get(key)
-        if (current) {
-          current.amount += ingredient.amount
-        } else {
-          list.set(key, { ...ingredient })
-        }
-      })
-    })
-    return Array.from(list.values()).sort((first, second) => first.name.localeCompare(second.name))
+  useEffect(() => {
+    if (menuRecipes.length === 0) {
+      return
+    }
+
+    setShoppingList((current) => buildShoppingListFromMenu(menuRecipes, current))
   }, [menuRecipes])
+
+  function handleGenerateShoppingList() {
+    const nextList = buildShoppingListFromMenu(menuRecipes, shoppingList)
+    setShoppingList(nextList)
+  }
 
   return (
     <div className="app-shell">
@@ -591,7 +704,13 @@ function App() {
         />
 
         <aside>
-          <ShoppingList shoppingList={shoppingList} />
+          <ShoppingList
+        shoppingList={shoppingList}
+        onGenerateFromMenu={handleGenerateShoppingList}
+        onTogglePurchased={toggleShoppingItemPurchased}
+        onRemoveItem={removeShoppingItem}
+        onClearList={clearShoppingList}
+      />
 
           <div className="sidebar-panel favorites-panel">
             <div className="section-heading">

@@ -4,6 +4,13 @@ export type Ingredient = {
   unit: string
 }
 
+export type ShoppingListItem = {
+  name: string
+  amount: number
+  unit: string
+  purchased: boolean
+}
+
 export type Recipe = {
   id: number
   name: string

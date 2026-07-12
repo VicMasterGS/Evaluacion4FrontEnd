@@ -118,6 +118,58 @@ function sanitizePositiveInteger(value: unknown): number | null {
   return null
 }
 
+function sanitizeWeeklyMenu(value: unknown): Record<string, number | null> {
+  if (!value || typeof value !== 'object') {
+    return {}
+  }
+
+  const seenRecipeIds = new Set<number>()
+  const nextMenu: Record<string, number | null> = {}
+
+  Object.entries(value as Record<string, unknown>).forEach(([day, recipeId]) => {
+    if (!WEEK_DAYS.includes(day as (typeof WEEK_DAYS)[number])) {
+      return
+    }
+
+    const parsedRecipeId = sanitizePositiveInteger(recipeId)
+    if (parsedRecipeId === null || seenRecipeIds.has(parsedRecipeId)) {
+      return
+    }
+
+    seenRecipeIds.add(parsedRecipeId)
+    nextMenu[day] = parsedRecipeId
+  })
+
+  return nextMenu
+}
+
+function normalizeShoppingListItems(items: ShoppingListItem[]): ShoppingListItem[] {
+  const aggregatedItems = new Map<string, ShoppingListItem>()
+
+  items.forEach((item) => {
+    const normalizedItem = sanitizeShoppingListItem(item)
+    if (!normalizedItem) {
+      return
+    }
+
+    const key = `${normalizedItem.name.trim().toLowerCase()}::${normalizedItem.unit.trim().toLowerCase()}`
+    const existing = aggregatedItems.get(key)
+
+    if (existing) {
+      existing.amount += normalizedItem.amount
+    } else {
+      aggregatedItems.set(key, {
+        name: normalizedItem.name.trim(),
+        unit: normalizedItem.unit.trim(),
+        amount: normalizedItem.amount,
+        purchased: normalizedItem.purchased,
+      })
+    }
+  })
+
+  return Array.from(aggregatedItems.values()).sort((first, second) => first.name.localeCompare(second.name))
+}
+
 function sanitizeIngredient(value: unknown): Ingredient | null {
   if (typeof value === 'string') {
     const name = sanitizeString(value)
@@ -228,17 +280,10 @@ function sanitizePersistedState(value: unknown): PersistedState {
     ? candidate.favorites.map((entry) => sanitizePositiveInteger(entry)).filter((entry): entry is number => entry !== null)
     : []
 
-  const weeklyMenu = candidate.weeklyMenu && typeof candidate.weeklyMenu === 'object'
-    ? Object.entries(candidate.weeklyMenu as Record<string, unknown>).reduce<Record<string, number | null>>((accumulator, [day, recipeId]) => {
-        if (WEEK_DAYS.includes(day as (typeof WEEK_DAYS)[number]) && sanitizePositiveInteger(recipeId) !== null) {
-          accumulator[day] = sanitizePositiveInteger(recipeId)
-        }
-        return accumulator
-      }, {})
-    : {}
+  const weeklyMenu = sanitizeWeeklyMenu(candidate.weeklyMenu)
 
   const shoppingList = Array.isArray(candidate.shoppingList)
-    ? candidate.shoppingList.map(sanitizeShoppingListItem).filter((item): item is ShoppingListItem => Boolean(item))
+    ? normalizeShoppingListItems(candidate.shoppingList.map(sanitizeShoppingListItem).filter((item): item is ShoppingListItem => Boolean(item)))
     : []
 
   return {
@@ -255,12 +300,17 @@ function loadPersistedState(): PersistedState {
 
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY)
-    if (!raw) {
+    if (!raw || raw.trim() === '') {
       return { favorites: [], weeklyMenu: {}, shoppingList: [] }
     }
 
     return sanitizePersistedState(JSON.parse(raw))
   } catch {
+    try {
+      window.localStorage.removeItem(STORAGE_KEY)
+    } catch {
+      // Se ignora si el navegador no permite limpiar el almacenamiento.
+    }
     return { favorites: [], weeklyMenu: {}, shoppingList: [] }
   }
 }
@@ -279,11 +329,11 @@ function savePersistedState(state: PersistedState): void {
 
 function buildShoppingListFromMenu(recipes: Recipe[], previousList: ShoppingListItem[] = []): ShoppingListItem[] {
   const itemsByKey = new Map<string, ShoppingListItem>()
-  const previousItems = new Map(previousList.map((item) => [`${item.name.toLowerCase()}::${item.unit.toLowerCase()}`, item]))
+  const previousItems = new Map(previousList.map((item) => [`${item.name.trim().toLowerCase()}::${item.unit.trim().toLowerCase()}`, item]))
 
   recipes.forEach((recipe) => {
     recipe.ingredients.forEach((ingredient) => {
-      const key = `${ingredient.name.toLowerCase()}::${ingredient.unit.toLowerCase()}`
+      const key = `${ingredient.name.trim().toLowerCase()}::${ingredient.unit.trim().toLowerCase()}`
       const previousItem = previousItems.get(key)
       const existingItem = itemsByKey.get(key)
 
@@ -291,16 +341,16 @@ function buildShoppingListFromMenu(recipes: Recipe[], previousList: ShoppingList
         existingItem.amount += ingredient.amount
       } else {
         itemsByKey.set(key, {
-          name: ingredient.name,
+          name: ingredient.name.trim(),
           amount: ingredient.amount,
-          unit: ingredient.unit,
+          unit: ingredient.unit.trim(),
           purchased: previousItem?.purchased ?? false,
         })
       }
     })
   })
 
-  return Array.from(itemsByKey.values()).sort((first, second) => first.name.localeCompare(second.name))
+  return normalizeShoppingListItems(Array.from(itemsByKey.values()))
 }
 
 function App() {
@@ -508,7 +558,7 @@ function App() {
         }
       }
       nextMenu[day] = recipeId
-      return nextMenu
+      return sanitizeWeeklyMenu(nextMenu)
     })
   }
 

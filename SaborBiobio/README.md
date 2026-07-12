@@ -51,9 +51,11 @@ npm run build
 
 ## Seguridad y calidad
 
-- No se almacenan datos sensibles
-- Los datos recibidos se sanitizan antes de guardarse
-- React renderiza el contenido de forma segura, evitando inyección de HTML en la interfaz
+- No se almacenan datos sensibles como contraseñas, tarjetas o datos bancarios.
+- Sólo se guardan preferencias locales de la interfaz: favoritos, menú semanal y estado de la lista de compras.
+- Antes de mostrar cualquier texto introducido por el usuario, se aplica una sanitización básica para evitar caracteres que puedan afectar a la interfaz.
+- El contenido renderizado por React se maneja de forma segura y no se inserta HTML dinámico desde entradas de usuario.
+- El almacenamiento en Local Storage se usa únicamente para datos no sensibles y de contexto de la aplicación, por lo que es seguro para este caso de uso.
 
 ## Manejo de errores y validaciones
 

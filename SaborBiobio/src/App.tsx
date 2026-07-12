@@ -104,7 +104,15 @@ function getFallbackRecipes(): Recipe[] {
 }
 
 function sanitizeString(value: unknown, fallback = ''): string {
-  return typeof value === 'string' ? value.trim() : fallback
+  if (typeof value !== 'string') {
+    return fallback
+  }
+
+  return value.trim().replace(/[<>]/g, '').slice(0, 200)
+}
+
+function sanitizeUserInput(value: unknown, fallback = ''): string {
+  return sanitizeString(value, fallback)
 }
 
 function sanitizePositiveInteger(value: unknown): number | null {
@@ -521,7 +529,8 @@ function App() {
 
   function handleSearch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    const trimmedQuery = query.trim()
+    const trimmedQuery = sanitizeUserInput(query)
+    setQuery(trimmedQuery)
     setActiveFilter(trimmedQuery ? 'search' : 'default')
     setActiveTag('')
     setActiveMealType('')
@@ -670,7 +679,7 @@ function App() {
           <form className="search-bar" onSubmit={handleSearch}>
             <input
               value={query}
-              onChange={(event) => setQuery(event.target.value)}
+              onChange={(event) => setQuery(sanitizeUserInput(event.target.value))}
               placeholder="Buscar por nombre"
               aria-label="Buscar recetas"
             />
